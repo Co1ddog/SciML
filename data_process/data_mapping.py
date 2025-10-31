@@ -27,6 +27,9 @@ if not {"MODEL_STD", "MAX_SEATS"}.issubset(ref.columns):
 out_dir = ref_dir
 out_dir.mkdir(parents=True, exist_ok=True)
 
+# 美国2025年7月数据，飞机平均载客率为86%
+passenger_load_factor = 0.86
+
 # === 遍历三个数据集 ===
 for file in datasets:
     df = pd.read_csv(file)
@@ -43,6 +46,9 @@ for file in datasets:
         how="left"
     )
     
+    # 添加 expected passengers (based on 86% load factor)
+    merged["EXPECTED_PASSENGERS"] = (merged["MAX_SEATS"] * passenger_load_factor).round(0)
+
     # 删除临时列
     merged.drop(columns=["TAIL_NUM_CLEAN"], inplace=True)
     
