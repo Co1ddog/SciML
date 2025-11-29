@@ -1,0 +1,16 @@
+feature,importance
+visibility,0.0
+low_ceiling_flag,0.0
+wind_speed,0.0
+rain_flag,0.0
+snow_flag,0.0
+thunder_flag,0.0
+fog_flag,0.0
+ice_flag,0.0
+HOUR_SIN,0.0
+HOUR_COS,0.0
+DOW_SIN,0.0
+DOW_COS,0.0
+MONTH_SIN,0.0
+MONTH_COS,0.0
+arrivals_1h,0.0

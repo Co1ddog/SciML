@@ -28,7 +28,7 @@ if device.type == "cuda":
 scaler = GradScaler(device="cuda", enabled=USE_AMP)
 
 # ============ 1) Load CSV ============
-CSV_PATH = "./data/ref/train_set.csv"
+CSV_PATH = "./data/ref/data_set.csv"
 print("[INFO] loading:", CSV_PATH)
 df = pd.read_csv(CSV_PATH, parse_dates=['CRS_ARR_TIME_dt'], low_memory=False)
 print(f"[INFO] loaded rows: {len(df):,}")
