@@ -1,2 +1,6 @@
 data/ref/*.csv
 data/ref/
+data/ref/*.csv
+data/ref/*.parquet
+data/ref/*.json
+data/ref/*.xlsx
