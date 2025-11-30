@@ -329,6 +329,63 @@ true_log = y_delay
 pred_min = np.expm1(pred_log)
 true_min = np.expm1(true_log)
 
+# ==============================================================
+# 9) Compute Metrics: RMSE, MAE, R²
+# ==============================================================
+def compute_metrics(true_y, pred_y):
+    """Return RMSE, MAE, R² in a stable manner."""
+    true_y = np.asarray(true_y)
+    pred_y = np.asarray(pred_y)
+
+    mse = np.mean((true_y - pred_y) ** 2)
+    rmse = np.sqrt(mse)
+    mae = np.mean(np.abs(true_y - pred_y))
+
+    # SST very small → R² extremely unstable → allow negative
+    sst = np.sum((true_y - np.mean(true_y)) ** 2)
+    ssr = np.sum((true_y - pred_y) ** 2)
+
+    if sst < 1e-12:
+        r2 = float('nan')   # undefined, prevents blow-up
+    else:
+        r2 = 1 - ssr / sst
+
+    return rmse, mae, r2
+
+
+def evaluate_node(true_log, pred_log, true_min, pred_min):
+    """Evaluate Neural ODE in both log-space and physical space."""
+    print("\n========== Neural ODE Evaluation ==========")
+
+    # ------------ Log-space metrics ------------
+    rmse_log, mae_log, r2_log = compute_metrics(true_log, pred_log)
+    print("Log-space RMSE:", rmse_log)
+    print("Log-space MAE :", mae_log)
+    print("Log-space R²  :", r2_log)
+
+    print("-------------------------------------------")
+
+    # ------------ Physical-scale metrics ------------
+    rmse_min, mae_min, r2_min = compute_metrics(true_min, pred_min)
+    print("Minutes RMSE  :", rmse_min)
+    print("Minutes MAE   :", mae_min)
+    print("Minutes R²    :", r2_min)
+
+    print("===========================================\n")
+
+    return {
+        "log": (rmse_log, mae_log, r2_log),
+        "min": (rmse_min, mae_min, r2_min),
+    }
+
+metrics = evaluate_node(
+    true_log=true_log,
+    pred_log=pred_log,
+    true_min=true_min,
+    pred_min=pred_min
+)
+
+
 # Raw delay for comparison
 raw_delay = g_raw.to_numpy()[-T_total:]
 
@@ -346,3 +403,75 @@ plt.savefig("node_delay_smooth_results.png", dpi=200)
 plt.show()
 
 print("[INFO] saved node_delay_smooth_results.png")
+
+# Convert index to hour for peak/off-peak
+hours = np.array([ts.hour for ts in full_idx])
+
+# -------- 1. Peak vs Off-peak --------------------------------
+peak_mask     = (hours >= 14) & (hours <= 20)
+offpeak_mask  = ~peak_mask
+
+def compute_pair(true, pred):
+    rmse = np.sqrt(np.mean((true - pred)**2))
+    mae  = np.mean(np.abs(true - pred))
+    return rmse, mae
+
+def summarize_condition(name, true_arr, pred_arr):
+    true_arr = np.asarray(true_arr)
+    pred_arr = np.asarray(pred_arr)
+
+    rmse = np.sqrt(np.mean((true_arr - pred_arr)**2))
+    mae  = np.mean(np.abs(true_arr - pred_arr))
+
+    count = len(true_arr)
+    mean_true = np.mean(true_arr)
+    pct95_true = np.percentile(true_arr, 95)
+
+    print(f"\n===== {name} =====")
+    print(f"Samples           : {count}")
+    print(f"True Mean (min)   : {mean_true:.3f}")
+    print(f"True 95th pct     : {pct95_true:.3f}")
+    print(f"NODE RMSE (min)   : {rmse:.3f}")
+    print(f"NODE MAE  (min)   : {mae:.3f}")
+
+# Print condition summaries
+summarize_condition("Peak Hours",     true_min[peak_mask],     pred_min[peak_mask])
+summarize_condition("Off-Peak Hours", true_min[offpeak_mask],  pred_min[offpeak_mask])
+
+# -------- 2. Severe weather vs normal weather ---------------
+weather_idx = U[:, u_all_plus.index("syn_precip")]
+threshold = np.percentile(weather_idx, 85)
+
+severe_mask = weather_idx >= threshold
+normal_mask = ~severe_mask
+
+summarize_condition("Severe Weather", true_min[severe_mask], pred_min[severe_mask])
+summarize_condition("Normal Weather", true_min[normal_mask], pred_min[normal_mask])
+
+# -------- 3. Holidays vs Non-holidays ------------------------
+holiday_mask = (U[:, u_all_plus.index("holiday_flag")] > 0.5)
+regular_mask = ~holiday_mask
+
+summarize_condition("Holiday Days", true_min[holiday_mask], pred_min[holiday_mask])
+summarize_condition("Regular Days", true_min[regular_mask], pred_min[regular_mask])
+
+# ==============================================================
+# Visualization
+# ==============================================================
+
+def plot_group(title, mask):
+    plt.figure(figsize=(12,4))
+    plt.plot(true_min[mask], label="True", alpha=0.8)
+    plt.plot(pred_min[mask], label="NODE Pred", alpha=0.8)
+    plt.title(title)
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+plot_group("Peak Hours", peak_mask)
+plot_group("Off-Peak Hours", offpeak_mask)
+plot_group("Severe Weather", severe_mask)
+plot_group("Normal Weather", normal_mask)
+plot_group("Holiday", holiday_mask)
+plot_group("Regular Days", regular_mask)
