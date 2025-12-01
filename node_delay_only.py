@@ -10,6 +10,7 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
+from sklearn.decomposition import PCA
 
 # ==============================================================
 # 0) Device
@@ -216,13 +217,35 @@ class ControlledNODE(nn.Module):
         h_next = torch.tanh(h_next)
         return torch.clamp(h_next, -H_CLIP, H_CLIP)
 
-    def forward(self, U, h0=None):
+    def forward(self, U, h0=None, return_h=False, return_f=False):
         h = self.h0 if h0 is None else h0
-        outs=[]
+        outs = []
+        h_list = []
+        f_list = []
+
         for t in range(U.size(0)):
+            # store hidden state BEFORE update
+            h_list.append(h)
+
+            # optional: save derivative field
+            if return_f:
+                f_list.append(self.f(h, self._ensure(U[t])))
+
             outs.append(self.out(h))
             h = self.rk4_step(h, U[t])
-        return torch.stack(outs), h
+
+        outs = torch.stack(outs)
+        h_list = torch.stack(h_list)
+
+        if return_f:
+            f_list = torch.stack(f_list)
+
+        if return_h and return_f:
+            return outs, h, h_list, f_list
+        elif return_h:
+            return outs, h, h_list
+        else:
+            return outs, h
 
 # ==============================================================
 # 5) Prepare tensors
@@ -321,7 +344,7 @@ model.load_state_dict(ckpt["model"])
 model.eval()
 
 with torch.no_grad():
-    pred_n,_ = model(U_t)
+    pred_n, _, h_seq, f_seq = model(U_t, return_h=True, return_f=True)
 
 pred_log = pred_n.cpu().numpy() * sd_delay + mu_delay
 true_log = y_delay
@@ -475,3 +498,23 @@ plot_group("Severe Weather", severe_mask)
 plot_group("Normal Weather", normal_mask)
 plot_group("Holiday", holiday_mask)
 plot_group("Regular Days", regular_mask)
+
+
+# -------- 4. PCA of hidden states -----------------------------
+pca = PCA(n_components=2)
+h_pca = pca.fit_transform(h_seq.reshape(len(h_seq), -1))
+plt.plot(h_pca[:,0])
+plt.plot(h_pca[:,1])
+plt.title("First PC of NODE hidden state")
+plt.show()
+
+
+dh = np.linalg.norm(np.diff(h_seq, axis=0), axis=1)
+plt.plot(dh)
+plt.title("||dh/dt|| over time")
+plt.show()
+
+f_norm = np.linalg.norm(f_seq.cpu().numpy(), axis=1)
+plt.plot(f_norm)
+plt.title("||f(h,u)|| over time")
+plt.show()
