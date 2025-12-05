@@ -4,3 +4,4 @@ data/ref/*.csv
 data/ref/*.parquet
 data/ref/*.json
 data/ref/*.xlsx
+.DS_Store
