@@ -35,7 +35,7 @@ scaler = GradScaler(device="cuda", enabled=USE_AMP)
 # ==============================================================
 # 1) Load CSV
 # ==============================================================
-CSV_PATH = "./data/ref/bwi_flights_with_weather_holiday_synth.csv"
+CSV_PATH = "./data/ref/bwi_flights_data.csv"
 print("[INFO] loading:", CSV_PATH)
 df = pd.read_csv(CSV_PATH, parse_dates=['CRS_ARR_TIME_dt'], low_memory=False)
 df = df.sort_values('CRS_ARR_TIME_dt')
@@ -254,9 +254,18 @@ U_t = torch.tensor(U, dtype=torch.float32, device=device)
 y_t = torch.tensor(y_delay_n, dtype=torch.float32, device=device)
 
 T = U_t.shape[0]
-split = int(0.8*T)
-train_slice = slice(0, split)
-valid_slice = slice(split, T)
+
+train_end = int(0.70 * T)
+val_end   = int(0.85 * T)
+
+train_slice = slice(0, train_end)
+valid_slice = slice(train_end, val_end)
+test_slice  = slice(val_end, T)
+
+print("[INFO] data split:")
+print("  Train      :", train_end)
+print("  Validation :", val_end - train_end)
+print("  Test       :", T - val_end)
 
 model = ControlledNODE(hdim=32, u_dim=U_t.shape[1],
                        dt=torch.tensor(5/60, dtype=torch.float32, device=device)).to(device)
@@ -346,6 +355,7 @@ model.eval()
 with torch.no_grad():
     pred_n, _, h_seq, f_seq = model(U_t, return_h=True, return_f=True)
 
+
 pred_log = pred_n.cpu().numpy() * sd_delay + mu_delay
 true_log = y_delay
 
@@ -407,6 +417,31 @@ metrics = evaluate_node(
     true_min=true_min,
     pred_min=pred_min
 )
+
+# ==============================================================
+# 10) Test Set Evaluation
+# ==============================================================
+
+model.eval()
+with torch.no_grad():
+    pred_test_n, _, _, _ = model(U_t[test_slice], return_h=True, return_f=True)
+
+# denormalize
+pred_test_log = pred_test_n.cpu().numpy() * sd_delay + mu_delay
+true_test_log = y_delay[test_slice]
+
+pred_test_min = np.expm1(pred_test_log)
+true_test_min = np.expm1(true_test_log)
+
+# compute metrics
+print("\n========== TEST SET METRICS ==========")
+test_metrics = evaluate_node(
+    true_log=true_test_log,
+    pred_log=pred_test_log,
+    true_min=true_test_min,
+    pred_min=pred_test_min
+)
+print("=======================================\n")
 
 
 # Raw delay for comparison
@@ -501,20 +536,44 @@ plot_group("Regular Days", regular_mask)
 
 
 # -------- 4. PCA of hidden states -----------------------------
+print("[INFO] computing PCA and latent dynamics...")
+
+# ---- Convert hidden sequence to CPU numpy ----
+h_seq_np = h_seq.detach().cpu().numpy().reshape(len(h_seq), -1)
+
+# ---- PCA ----
 pca = PCA(n_components=2)
-h_pca = pca.fit_transform(h_seq.reshape(len(h_seq), -1))
-plt.plot(h_pca[:,0])
-plt.plot(h_pca[:,1])
-plt.title("First PC of NODE hidden state")
+h_pca = pca.fit_transform(h_seq_np)
+
+plt.figure(figsize=(10,4))
+plt.plot(h_pca[:,0], label="PC1")
+plt.plot(h_pca[:,1], label="PC2")
+plt.title("First 2 Principal Components of NODE Hidden State")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
 plt.show()
 
+# ---- Latent velocity ||h_{t+1} - h_t|| ----
+dh = np.linalg.norm(np.diff(h_seq_np, axis=0), axis=1)
 
-dh = np.linalg.norm(np.diff(h_seq, axis=0), axis=1)
+plt.figure(figsize=(10,4))
 plt.plot(dh)
-plt.title("||dh/dt|| over time")
+plt.title("||h_{t+1} - h_t|| over time")
+plt.grid(alpha=0.3)
+plt.tight_layout()
 plt.show()
 
-f_norm = np.linalg.norm(f_seq.cpu().numpy(), axis=1)
+# ---- Vector field norm ||f(h,u)|| ----
+f_np = f_seq.detach().cpu().numpy()   # convert to numpy
+f_norm = np.linalg.norm(f_np, axis=1)
+
+plt.figure(figsize=(10,4))
 plt.plot(f_norm)
 plt.title("||f(h,u)|| over time")
+plt.grid(alpha=0.3)
+plt.tight_layout()
 plt.show()
+
+print("[INFO] Latent dynamics analysis completed.")
+

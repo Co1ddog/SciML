@@ -11,7 +11,7 @@ import torch.nn as nn
 # ==============================================================
 # 1) Load CSV
 # ==============================================================
-CSV_PATH = "../data/ref/bwi_flights_with_weather_holiday_synth.csv"
+CSV_PATH = "../data/ref/bwi_flights_data.csv"
 print("[INFO] loading:", CSV_PATH)
 df = pd.read_csv(CSV_PATH, parse_dates=['CRS_ARR_TIME_dt'], low_memory=False)
 df = df.sort_values("CRS_ARR_TIME_dt")
@@ -115,7 +115,7 @@ U = (U - U_mu) / U_sd
 U = np.clip(np.nan_to_num(U), -5.0, 5.0)
 
 # ==============================================================
-# 7) Split
+# 7) Split: 70% train / 15% val / 15% test
 # ==============================================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("[INFO] device:", device)
@@ -123,10 +123,18 @@ print("[INFO] device:", device)
 U_t = torch.tensor(U, dtype=torch.float32, device=device)
 y_t = torch.tensor(y_delay_n, dtype=torch.float32, device=device)
 
-T = U_t.shape[0]
-split = int(0.8 * T)
-train_slice = slice(0, split)
-valid_slice = slice(split, T)
+T = len(U_t)
+train_end = int(0.70 * T)
+val_end   = int(0.85 * T)
+
+train_slice = slice(0, train_end)
+valid_slice = slice(train_end, val_end)
+test_slice  = slice(val_end, T)
+
+print("[INFO] data split:")
+print("  Train:", train_end)
+print("  Val  :", val_end - train_end)
+print("  Test :", T - val_end)
 
 # ==============================================================
 # 8) LSTM Model
@@ -176,6 +184,7 @@ for ep in range(1, epochs+1):
         batches += 1
         start = end
 
+    # Validation
     model.eval()
     with torch.no_grad():
         pv = model(U_t[valid_slice].unsqueeze(0)).squeeze(0)
@@ -184,20 +193,27 @@ for ep in range(1, epochs+1):
     print(f"[LSTM] Epoch {ep:02d} | train {total/batches:.4f} | val {val:.4f}")
 
 # ==============================================================
-# 10) Predict full sequence
+# 10) Predict: Full sequence + Test-only evaluation
 # ==============================================================
 model.eval()
 with torch.no_grad():
-    pred_n = model(U_t.unsqueeze(0)).squeeze(0).cpu().numpy()
+    pred_n_full = model(U_t.unsqueeze(0)).squeeze(0).cpu().numpy()
+    pred_n_test = model(U_t[test_slice].unsqueeze(0)).squeeze(0).cpu().numpy()
 
-pred_log = pred_n * sd_delay + mu_delay
-true_log = y_delay
+# ---- Denormalize ----
+pred_log_full = pred_n_full * sd_delay + mu_delay
+pred_log_test = pred_n_test * sd_delay + mu_delay
 
-pred_min = np.expm1(pred_log)
-true_min = np.expm1(true_log)
+true_log_full = y_delay
+true_log_test = y_delay[test_slice]
+
+pred_min_full = np.expm1(pred_log_full)
+pred_min_test = np.expm1(pred_log_test)
+true_min_full = np.expm1(true_log_full)
+true_min_test = np.expm1(true_log_test)
 
 # ==============================================================
-# 11) Evaluation Metrics (RMSE, MAE, R2)
+# 11) Evaluation Metrics
 # ==============================================================
 def rmse(a, b):
     return float(np.sqrt(np.mean((a - b)**2)))
@@ -205,23 +221,23 @@ def rmse(a, b):
 def mae(a, b):
     return float(np.mean(np.abs(a - b)))
 
-def r2(a, b):
-    ss_res = np.sum((a - b)**2)
-    ss_tot = np.sum((a - np.mean(a))**2)
+def r2(true, pred):
+    ss_res = np.sum((true - pred)**2)
+    ss_tot = np.sum((true - np.mean(true))**2)
     return float(1 - ss_res / ss_tot)
 
-print("\n========== LSTM Baseline Metrics ==========")
-print("RMSE:", rmse(pred_min, true_min))
-print("MAE :", mae(pred_min, true_min))
-print("R²  :", r2(true_min, pred_min))
-print("===========================================\n")
+print("\n========== LSTM Baseline Metrics (TEST SET) ==========")
+print("RMSE:", rmse(pred_min_test, true_min_test))
+print("MAE :", mae(pred_min_test, true_min_test))
+print("R²  :", r2(true_min_test, pred_min_test))
+print("======================================================\n")
 
 # ==============================================================
-# 12) Plot (same as NODE)
+# 12) Plot
 # ==============================================================
 plt.figure(figsize=(14,6))
-plt.plot(true_min, label="Smoothed Delay (truth)", alpha=0.9)
-plt.plot(pred_min,  label="Predicted Smoothed Delay (LSTM)", alpha=0.9)
+plt.plot(true_min_full, label="Smoothed Delay (truth)", alpha=0.9)
+plt.plot(pred_min_full,  label="Predicted Smoothed Delay (LSTM)", alpha=0.9)
 plt.legend()
 plt.grid()
 plt.title("LSTM Prediction of Smoothed Arrival Delay")

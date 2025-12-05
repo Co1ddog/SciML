@@ -12,7 +12,7 @@ import torch.nn as nn
 # ==============================================================
 # 1) Load CSV
 # ==============================================================
-CSV_PATH = "../data/ref/bwi_flights_with_weather_holiday_synth.csv"
+CSV_PATH = "../data/ref/bwi_flights_data.csv"
 print("[INFO] loading:", CSV_PATH)
 df = pd.read_csv(CSV_PATH, parse_dates=["CRS_ARR_TIME_dt"], low_memory=False)
 df = df.sort_values("CRS_ARR_TIME_dt")
@@ -124,7 +124,7 @@ U = (U - U_mu) / U_sd
 U = np.clip(np.nan_to_num(U), -5.0, 5.0)
 
 # ==============================================================
-# 7) Tensors & split
+# 7) Tensors & Split (70% train / 15% val / 15% test)
 # ==============================================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("[INFO] device:", device)
@@ -133,14 +133,21 @@ U_t = torch.tensor(U, dtype=torch.float32, device=device)
 y_t = torch.tensor(y_delay_n, dtype=torch.float32, device=device)
 
 T = len(U_t)
-split = int(0.8 * T)
-train_slice = slice(0, split)
-valid_slice = slice(split, T)
+train_end = int(0.70 * T)
+val_end   = int(0.85 * T)
 
+train_slice = slice(0, train_end)
+valid_slice = slice(train_end, val_end)
+test_slice  = slice(val_end, T)
+
+print("[INFO] data split:")
+print("  Train      :", train_end)
+print("  Validation :", val_end - train_end)
+print("  Test       :", T - val_end)
 print(f"[INFO] U-dim = {U_t.shape[1]}, steps = {T}")
 
 # ==============================================================
-# 8) MLP model for smoothed delay
+# 8) MLP model
 # ==============================================================
 class MLPDelay(nn.Module):
     def __init__(self, input_dim):
@@ -150,27 +157,26 @@ class MLPDelay(nn.Module):
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, 1)  # single output: smoothed delay
+            nn.Linear(128, 1)
         )
 
     def forward(self, x):
-        return self.net(x).squeeze(-1)  # [N]
+        return self.net(x).squeeze(-1)
 
 mlp = MLPDelay(input_dim=U_t.shape[1]).to(device)
 optim = torch.optim.Adam(mlp.parameters(), lr=1e-3)
 mse = nn.MSELoss()
 
 # ==============================================================
-# 9) Training (full sequence, supervised regression)
+# 9) Training (supervised regression)
 # ==============================================================
 epochs = 20
 for ep in range(1, epochs + 1):
     mlp.train()
-    optim.zero_grad()
-
-    pred = mlp(U_t[train_slice])                    # [T_train]
+    pred = mlp(U_t[train_slice])
     loss = mse(pred, y_t[train_slice])
 
+    optim.zero_grad()
     loss.backward()
     optim.step()
 
@@ -185,44 +191,51 @@ for ep in range(1, epochs + 1):
 print("\n[INFO] MLP training finished.\n")
 
 # ==============================================================
-# 10) Predict full sequence & inverse transform
+# 10) Prediction: full sequence + test-only evaluation
 # ==============================================================
 mlp.eval()
 with torch.no_grad():
-    pred_n = mlp(U_t).cpu().numpy()   # normalized log-smooth
+    pred_n_full = mlp(U_t).cpu().numpy()
+    pred_n_test = mlp(U_t[test_slice]).cpu().numpy()
 
-pred_log = pred_n * sd_delay + mu_delay
-true_log = y_delay
+# inverse transform
+pred_log_full = pred_n_full * sd_delay + mu_delay
+pred_log_test = pred_n_test * sd_delay + mu_delay
 
-pred_min = np.expm1(pred_log)
-true_min = np.expm1(true_log)
+true_log_full = y_delay
+true_log_test = y_delay[test_slice]
+
+pred_min_full = np.expm1(pred_log_full)
+pred_min_test = np.expm1(pred_log_test)
+true_min_full = np.expm1(true_log_full)
+true_min_test = np.expm1(true_log_test)
 
 # ==============================================================
-# 11) Evaluation metrics: RMSE, MAE, R2
+# 11) Metrics (same format as NODE/LSTM)
 # ==============================================================
 def rmse(a, b):
-    return float(np.sqrt(np.mean((a - b) ** 2)))
+    return float(np.sqrt(np.mean((a - b)**2)))
 
 def mae(a, b):
     return float(np.mean(np.abs(a - b)))
 
-def r2(y_true, y_pred):
-    ss_res = np.sum((y_true - y_pred) ** 2)
-    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+def r2(true, pred):
+    ss_res = np.sum((true - pred)**2)
+    ss_tot = np.sum((true - np.mean(true))**2)
     return float(1 - ss_res / ss_tot)
 
-print("========== MLP Baseline Metrics (Smoothed Delay) ==========")
-print("RMSE:", rmse(pred_min, true_min))
-print("MAE :", mae(pred_min, true_min))
-print("R²  :", r2(true_min, pred_min))
-print("===========================================================\n")
+print("========== MLP Baseline Metrics (TEST SET) ==========")
+print("RMSE:", rmse(pred_min_test, true_min_test))
+print("MAE :", mae(pred_min_test, true_min_test))
+print("R²  :", r2(true_min_test, pred_min_test))
+print("=====================================================\n")
 
 # ==============================================================
-# 12) Plotting (same style as NODE / LSTM)
+# 12) Plot
 # ==============================================================
 plt.figure(figsize=(14, 6))
-plt.plot(true_min, label="Smoothed Delay (truth)", alpha=0.9)
-plt.plot(pred_min, label="Predicted Smoothed Delay (MLP)", alpha=0.9)
+plt.plot(true_min_full, label="Smoothed Delay (truth)", alpha=0.9)
+plt.plot(pred_min_full, label="Predicted Smoothed Delay (MLP)", alpha=0.9)
 plt.legend()
 plt.grid()
 plt.title("MLP Prediction of Smoothed Arrival Delay")
